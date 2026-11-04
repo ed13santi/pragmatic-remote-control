@@ -17,6 +17,7 @@ against exhaustive search, simulation and each other:
 | **Alternating** policy iteration (API) | `pragmatic_rc.push` | A Nash equilibrium of the encoder/decoder game. Fast, not always optimal. The decoder step is an exact best response; in control that takes a search over action sequences. |
 | **Optimal** joint policy (HSVI on the coordinator POMDP) | `pragmatic_rc.optimal` | An ε-optimal value with a certified lower and upper bound, and the policy that achieves it. |
 | **POMCP** on the coordinator POMDP | `pragmatic_rc.pomcp` | Sampling-based planning for state spaces too large for the exact solver. Needs only a simulator; searches a restricted family of encoder rules. |
+| **Learned policies** (actor-critic) | `pragmatic_rc.neural` | The encoder's prescription is a network of (belief summary, true state). No enumeration of subsets; no optimality certificate. Needs PyTorch. |
 | Pull-based modified policy iteration (MPI) | `pragmatic_rc.pull` | A policy for the case where only the decoder decides when to communicate. Reaches local optima, so use `restarts`. |
 
 Edoardo David Santi contributed the alternating and optimal algorithms to the
@@ -138,6 +139,23 @@ against certified bounds of 4.38 – 4.43. `envs.GridWorld(n)` gives a state spa
 that grows as `n²`. Continuous states (MuJoCo) would additionally need
 discretised observations or progressive widening, which is not implemented.
 
+### Learned encoder and decoder
+
+The rule families above are hand-designed. `pragmatic_rc.neural` instead learns
+the prescription: a network maps a summary of the decoder's belief (particle mean
+and spread, time since the last update) and the encoder's true state to a send
+probability, and a second network picks the control action. The subset of states
+in which the encoder sends is never enumerated, only evaluated at the current
+state. Silence stays informative: after a silent step each particle is reweighted
+by the probability the encoder would have stayed quiet. Both networks are trained
+jointly by actor-critic with a critic that sees the true state.
+
+On the same 3-state problems the learned policies reach 4.38 ± 0.004 (estimation,
+bounds 4.38 – 4.43) and 3.78 ± 0.003 (control, bounds 3.80 – 3.84), in under a
+minute of CPU. The control result is slightly below the exact lower bound, a
+reminder that there is no certificate once the policy is learned.
+`pip install -e ".[neural]"` to use it.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
@@ -213,9 +231,10 @@ src/pragmatic_rc/
     optimal.py    coordinator POMDP and HSVI, policy execution
     simulate.py   Monte Carlo simulators for the pull and push policies
     pomcp.py      POMCP planner with encoder rule families
+    neural.py     learned encoder/decoder (actor-critic, PyTorch)
     envs.py       simulators for sampling-based planning (tabular, GridWorld)
 experiments/      scripts that regenerate every figure
-tests/            53 tests
+tests/            55 tests
 ```
 
 ## Citation

@@ -38,7 +38,9 @@ class Simulator(Protocol):
 class TabularSimulator:
     """Wraps an :class:`MDP`, so that sampling-based and exact solvers can be compared."""
 
-    def __init__(self, mdp: MDP) -> None:
+    def __init__(self, mdp: MDP, onehot: bool = False) -> None:
+        self.onehot = onehot
+        self.feature_scale = 1.0 if onehot else float(mdp.n_states)
         self.mdp = mdp
         self.n_actions = mdp.n_actions
         self.n_states = mdp.n_states
@@ -53,7 +55,23 @@ class TabularSimulator:
         return s2, float(self.mdp.R[a, s, s2])
 
     def features(self, s: int) -> np.ndarray:
+        if self.onehot:
+            return np.eye(self.n_states)[s]
         return np.array([float(s)])
+
+    # vectorised versions used by the learned policies
+    def sample_initial_batch(self, n: int, rng: np.random.Generator) -> np.ndarray:
+        return rng.integers(self.n_states, size=n)
+
+    def step_batch(self, s: np.ndarray, a: np.ndarray, rng: np.random.Generator):
+        c = self._cum[a, s]
+        s2 = np.minimum((c <= rng.random(len(s))[:, None]).sum(axis=1), self.n_states - 1)
+        return s2, self.mdp.R[a, s, s2].astype(float)
+
+    def features_batch(self, s: np.ndarray) -> np.ndarray:
+        if self.onehot:
+            return np.eye(self.n_states)[s]
+        return s[:, None].astype(float)
 
 
 class GridWorld:
@@ -72,6 +90,7 @@ class GridWorld:
         self.n_actions = 5
         self.n_states = n * n
         self.goal = goal if goal is not None else (n - 1, n - 1)
+        self.feature_scale = float(n - 1)
 
     def _cell(self, s: int) -> tuple[int, int]:
         return s // self.n, s % self.n
@@ -89,6 +108,18 @@ class GridWorld:
 
     def features(self, s: int) -> np.ndarray:
         return np.array(self._cell(s), dtype=float)
+
+    def sample_initial_batch(self, n: int, rng: np.random.Generator) -> np.ndarray:
+        return rng.integers(self.n_states, size=n)
+
+    def step_batch(self, s: np.ndarray, a: np.ndarray, rng: np.random.Generator):
+        a = np.where(rng.random(len(s)) < self.slip, rng.integers(1, 5, size=len(s)), a)
+        x = np.clip(s // self.n + self.MOVES[a, 0], 0, self.n - 1)
+        y = np.clip(s % self.n + self.MOVES[a, 1], 0, self.n - 1)
+        return x * self.n + y, ((x == self.goal[0]) & (y == self.goal[1])).astype(float)
+
+    def features_batch(self, s: np.ndarray) -> np.ndarray:
+        return np.stack([s // self.n, s % self.n], axis=1).astype(float)
 
     def to_mdp(self) -> MDP:
         """Exact transition and reward tensors, for baselines that need them."""
