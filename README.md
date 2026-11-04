@@ -14,7 +14,7 @@ against exhaustive search, simulation and each other:
 
 | Method | Module | What it gives you |
 | --- | --- | --- |
-| **Alternating** policy iteration (API) | `pragmatic_rc.push` | A Nash equilibrium of the encoder/decoder game. Fast, not always optimal. |
+| **Alternating** policy iteration (API) | `pragmatic_rc.push` | A Nash equilibrium of the encoder/decoder game. Fast, not always optimal. The decoder step is an exact best response; in control that takes a search over action sequences. |
 | **Optimal** joint policy (HSVI on the coordinator POMDP) | `pragmatic_rc.optimal` | An ε-optimal value with a certified lower and upper bound, and the policy that achieves it. |
 | Pull-based modified policy iteration (MPI) | `pragmatic_rc.pull` | A policy for the case where only the decoder decides when to communicate. Reaches local optima, so use `restarts`. |
 
@@ -37,7 +37,7 @@ cost comes from the truncation described under *Limitations*.
 ```bash
 pip install -e ".[dev]"
 pytest                      # about 30 s
-python experiments/compare.py
+python experiments/compare.py   # about 10 min, dominated by the optimal solver
 ```
 
 ```python
@@ -86,6 +86,14 @@ of the policy.
   action sequence after each update and computing beliefs from it.
 * The alternating solver filters the belief with the encoder's current rule:
   silence removes the states in which the encoder would have transmitted.
+  Against a fixed encoder the decoder's best response is an MDP over
+  `(delta, last state)` **only in remote estimation**, where its actions do not
+  move the process. In control it is a search over action sequences, so
+  `push.decoder_best_response` enumerates them (exponential in `t_max`).
+  Greedy policy iteration over `(delta, last state)` is available as a
+  fallback for larger problems but can stop at a worse policy: on random
+  4-state control tasks it was not a best response in 3 of 40 runs, with a
+  decoder value up to 0.11 below the best.
 * The optimal solver works directly on the belief, so neither the delay nor
   the action history needs to be tracked separately.
 
@@ -137,8 +145,12 @@ alternating methods on 30-state problems:
 * **Analytic values against simulation.** Policy evaluation for the pull-based
   and alternating solvers is compared with a Monte Carlo simulation that never
   computes a belief, including a case where silence is informative.
+* **The decoder step is a best response.** Compared with an independent
+  exhaustive search over action sequences, in control and in estimation. A
+  regression test pins down a control case where the greedy step fails.
 * **Alternating policy iteration is an equilibrium.** Neither player can gain
-  by deviating, from both starting points.
+  by deviating, from both starting points, with the decoder's deviation
+  checked by exhaustive search.
 * **Optimal against everything else.** See above.
 * **Free channel.** With zero cost the optimal value equals full-information
   control.
@@ -154,6 +166,10 @@ alternating methods on 30-state problems:
 * **Alternating policy iteration is only an equilibrium.** From different
   starting points it can end in different equilibria; `push.never_transmit` and
   `push.always_transmit` give two natural ones.
+* **The exact decoder step has a size limit.** In control it searches
+  `A ** t_max` action sequences per last state. Beyond 20,000 it falls back to
+  the greedy step and the equilibrium guarantee no longer holds. Remote
+  estimation is unaffected, since the greedy step is exact there.
 * **Not a line-by-line port of the paper's algorithms.** The pull-based
   improvement step is my reading of the paper's MPI and reaches local optima.
   The benchmark MDP construction follows Sec. VI of the paper but its
@@ -175,7 +191,7 @@ src/pragmatic_rc/
     optimal.py    coordinator POMDP and HSVI, policy execution
     simulate.py   Monte Carlo simulators for the pull and push policies
 experiments/      scripts that regenerate every figure
-tests/            36 tests
+tests/            50 tests
 ```
 
 ## Citation

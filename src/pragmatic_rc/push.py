@@ -110,9 +110,21 @@ def _improve_decoder(mdp: MDP, policy: PushPolicy, v0: np.ndarray, beta: float, 
     return new
 
 
-def decoder_best_response(
+MAX_EXACT_PLANS = 20_000
+
+
+def _dynamics_ignore_actions(mdp: MDP) -> bool:
+    return bool(np.allclose(mdp.P, mdp.P[:1]))
+
+
+def _decoder_best_response_local(
     mdp: MDP, pi_d: np.ndarray, c: np.ndarray, beta: float, t_max: int, max_iter: int = 500
 ) -> np.ndarray:
+    """Greedy policy iteration over ``(delta, last state)``.
+
+    Exact when the dynamics do not depend on the decoder's action (remote
+    estimation). Otherwise it can stop at a local optimum.
+    """
     pi_d = pi_d.copy()
     for _ in range(max_iter):
         policy = PushPolicy(pi_d, c)
@@ -122,6 +134,86 @@ def decoder_best_response(
             return pi_d
         pi_d = new
     raise RuntimeError("decoder best response did not converge")
+
+
+def _decoder_best_response_exact(
+    mdp: MDP, pi_d: np.ndarray, c: np.ndarray, beta: float, t_max: int, tol: float = 1e-12
+) -> np.ndarray:
+    """Exhaustive search over the decoder's action sequences after each update.
+
+    With a fixed encoder, what the decoder knows ``delta`` steps after receiving
+    ``l`` is fully determined by ``(delta, l)``, but its belief also depends on
+    the actions it took in between. The problem is therefore a search over
+    action sequences, not a Markov decision process on ``(delta, l)``. Sequences
+    are expanded as a tree so that shared prefixes are computed once; the cost
+    is ``A ** t_max`` sequences per last state.
+    """
+    S, A, g = mdp.n_states, mdp.n_actions, mdp.gamma
+    u = np.eye(S)[:, None, :]  # (l, sequences, x): unnormalised belief
+    gain = np.zeros((S, 1))  # reward minus transmission cost
+    mass = np.zeros((S, 1, S))  # discounted probability of the next renewal state
+    seqs = np.zeros((1, 0), dtype=int)
+    for k in range(t_max):
+        parts = []
+        for a in range(A):
+            moved = u @ mdp.P[a]
+            tx = moved * c[k + 1][:, None, :]
+            parts.append(
+                (
+                    gain + g**k * (u @ mdp.Rbar[a]) - beta * g ** (k + 1) * tx.sum(axis=2),
+                    mass + g ** (k + 1) * tx,
+                    moved * (1 - c[k + 1][:, None, :]),
+                    np.hstack([seqs, np.full((len(seqs), 1), a)]),
+                )
+            )
+        gain = np.concatenate([p[0] for p in parts], axis=1)
+        mass = np.concatenate([p[1] for p in parts], axis=1)
+        u = np.concatenate([p[2] for p in parts], axis=1)
+        seqs = np.concatenate([p[3] for p in parts], axis=0)
+
+    v = np.zeros(S)
+    while True:
+        new = (gain + mass @ v).max(axis=1)
+        if np.max(np.abs(new - v)) < tol:
+            break
+        v = new
+    q = gain + mass @ v  # (l, sequences)
+    weights = A ** np.arange(t_max)
+    old_index = (pi_d.T * weights).sum(axis=1)  # position of the current plan, a-major order
+    out = pi_d.copy()
+    for l in range(S):
+        if q[l, old_index[l]] >= q[l].max() - 1e-10:
+            continue  # keep the current plan on ties so that API terminates
+        out[:, l] = seqs[int(np.argmax(q[l]))]
+    return out
+
+
+def decoder_best_response(
+    mdp: MDP,
+    pi_d: np.ndarray,
+    c: np.ndarray,
+    beta: float,
+    t_max: int,
+    exact: bool | None = None,
+) -> np.ndarray:
+    """Optimal decoder policy against a fixed encoder.
+
+    ``exact=None`` picks automatically. When the dynamics do not depend on the
+    action (remote estimation) greedy policy iteration is exact. Otherwise the
+    best response requires searching action sequences, which is done
+    exhaustively while ``A ** t_max`` is at most ``MAX_EXACT_PLANS``. Beyond
+    that the greedy fallback is used and the result may be a local optimum.
+    """
+    if exact is None:
+        if _dynamics_ignore_actions(mdp):
+            exact = False
+        elif mdp.n_actions**t_max <= MAX_EXACT_PLANS:
+            exact = True
+        else:
+            exact = False  # local fallback, no guarantee
+    if exact:
+        return _decoder_best_response_exact(mdp, pi_d, c, beta, t_max)
+    return _decoder_best_response_local(mdp, pi_d, c, beta, t_max)
 
 
 def encoder_best_response(
@@ -164,13 +256,20 @@ def api(
     c_init: np.ndarray,
     rng: np.random.Generator | None = None,
     max_iter: int = 500,
+    exact: bool | None = None,
 ) -> tuple[PushPolicy, Evaluation]:
-    """Alternating policy iteration from an initial encoder policy."""
+    """Alternating policy iteration from an initial encoder policy.
+
+    The encoder step is exact. The decoder step is exact for remote estimation
+    and, for control, whenever ``A ** t_max`` is small enough to search action
+    sequences exhaustively (see :func:`decoder_best_response`). Where it is,
+    a fixed point is a Nash equilibrium.
+    """
     rng = rng or np.random.default_rng(0)
     pi_d = rng.integers(0, mdp.n_actions, size=(t_max, mdp.n_states))
     c = c_init.copy()
     for _ in range(max_iter):
-        new_pi_d = decoder_best_response(mdp, pi_d, c, beta, t_max)
+        new_pi_d = decoder_best_response(mdp, pi_d, c, beta, t_max, exact)
         new_c = encoder_best_response(mdp, new_pi_d, c, beta, t_max)
         if np.array_equal(new_pi_d, pi_d) and np.array_equal(new_c, c):
             policy = PushPolicy(pi_d, c)
