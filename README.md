@@ -197,9 +197,19 @@ lower is better, 100 episodes, 1M PPO decisions each, one seed):
 | Joint (learns when to send) | 243 ± 13 | 73 |
 
 At this cost the joint policy reaches the same total as always transmitting
-while sending 27% less often, so it is not yet doing better. It has probably not
-converged; one seed, a small network, and no tuning. Treat this as a working
-pipeline rather than a result about the method.
+while sending 27% less often, so it is not yet doing better.
+
+At higher cost, with twice the training (2M decisions), it clearly economises:
+
+| β | Joint cost | Joint transmissions | Always transmit (estimated) | Never transmit |
+| --- | --- | --- | --- | --- |
+| 1.0 | 267 ± 11 | 26 | about 310 | 565 ± 8 |
+| 3.0 | 330 ± 10 | 24 | about 510 | 565 ± 8 |
+
+The "always" column is not a separate run: it is the 210 control cost measured at
+β = 0.3 plus β per transmission. One seed throughout, a small network and no
+tuning, so treat these as a working pipeline rather than a result about the
+method. There is no exact solution to compare against.
 `pip install -e ".[ppo]"`; `python experiments/pendulum.py joint`.
 
 ## Results
