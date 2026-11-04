@@ -173,6 +173,35 @@ optimiser would not: staying silent is always available. That is a training
 shortfall, not a property of the problem, and the result there should be read as
 a lower bound.
 
+### PPO on a noisy pendulum
+
+`pragmatic_rc.pendulum` wraps the coordinator problem as a Gymnasium environment
+and `pragmatic_rc.ppo` trains it with Stable-Baselines3 PPO. A single network
+plays both roles. Each time step is two decisions (control, then send or stay
+silent), the observation says which one is due, and the true state is hidden from
+the network in the control phase so that execution stays decentralised. The
+decoder's belief is a particle filter that reweights particles by the probability
+the encoder would have stayed silent, using the policy being trained. The
+pendulum is the standard swing-up task with process noise on the angular velocity.
+
+![Controller view (black when nothing arrives) and the true pendulum](figures/pendulum_0.3.gif)
+
+Left: what the controller sees, which is black whenever no update arrives. Right:
+the pendulum. Total cost over 100 steps (pendulum cost plus 0.3 per transmission,
+lower is better, 100 episodes, 1M PPO decisions each, one seed):
+
+| Policy | Cost | Transmissions per episode |
+| --- | --- | --- |
+| Never transmit (controller trained alone) | 565 ± 8 | 0 |
+| Always transmit (controller trained alone) | 240 ± 13 | 100 |
+| Joint (learns when to send) | 243 ± 13 | 73 |
+
+At this cost the joint policy reaches the same total as always transmitting
+while sending 27% less often, so it is not yet doing better. It has probably not
+converged; one seed, a small network, and no tuning. Treat this as a working
+pipeline rather than a result about the method.
+`pip install -e ".[ppo]"`; `python experiments/pendulum.py joint`.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
@@ -249,6 +278,8 @@ src/pragmatic_rc/
     simulate.py   Monte Carlo simulators for the pull and push policies
     pomcp.py      POMCP planner with encoder rule families
     neural.py     learned encoder/decoder (actor-critic, PyTorch)
+    pendulum.py   noisy pendulum as a Gymnasium environment, GIF renderer
+    ppo.py        Stable-Baselines3 PPO training and evaluation
     envs.py       simulators for sampling-based planning (tabular, GridWorld)
 experiments/      scripts that regenerate every figure
 tests/            55 tests

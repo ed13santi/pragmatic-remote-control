@@ -143,6 +143,12 @@ def plt_circle(xy, r, color):
     return Circle(xy, r, color=color, zorder=3)
 
 
+def _background(ax, color: str) -> None:
+    from matplotlib.patches import Rectangle
+
+    ax.add_patch(Rectangle((-1.5, -1.5), 3, 3, color=color, zorder=0))
+
+
 def render_gif(frames, path: str, fps: int = 20) -> None:
     """``frames`` is a list of dicts with ``x`` (true state), ``received`` (state just
     sent, or None when silent), ``t`` and ``sends`` (cumulative)."""
@@ -154,17 +160,17 @@ def render_gif(frames, path: str, fps: int = 20) -> None:
 
     images = []
     for f in frames:
-        fig, (left, right) = plt.subplots(1, 2, figsize=(7.2, 3.8), dpi=80)
+        fig, (left, right) = plt.subplots(1, 2, figsize=(7.2, 3.9), dpi=80)
         for ax in (left, right):
             ax.set_xlim(-1.5, 1.5); ax.set_ylim(-1.5, 1.5); ax.set_aspect("equal"); ax.axis("off")
-        right.set_facecolor("#f4f4f2"); right.patch.set_visible(True)
+        _background(right, "#f4f4f2")
         draw_pendulum(right, f["x"][0])
         right.set_title("Pendulum", fontsize=11)
         if f["received"] is None:
-            left.set_facecolor("black"); left.patch.set_visible(True)
+            _background(left, "black")
             left.set_title("Controller view: no signal", fontsize=11)
         else:
-            left.set_facecolor("#f4f4f2"); left.patch.set_visible(True)
+            _background(left, "#f4f4f2")
             draw_pendulum(left, f["received"][0])
             left.set_title("Controller view: update received", fontsize=11, color="#1e8449")
         fig.suptitle(f"t = {f['t']:3d}   transmissions: {f['sends']}", fontsize=10)
