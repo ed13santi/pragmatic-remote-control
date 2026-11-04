@@ -73,7 +73,8 @@ class Rollout:
     cost: list = field(default_factory=list)
 
 
-def rollout(sim, pol: Policies, beta: float, n_episodes: int, horizon: int, rng, stochastic: bool = True) -> Rollout:
+def rollout(sim, pol: Policies, beta: float, n_episodes: int, horizon: int, rng, stochastic: bool = True,
+            force_send: int | None = None) -> Rollout:
     """Run ``n_episodes`` in parallel. The first state is revealed for free."""
     B, N = n_episodes, N_PARTICLES
     out = Rollout()
@@ -95,10 +96,14 @@ def rollout(sim, pol: Policies, beta: float, n_episodes: int, horizon: int, rng,
             xf = _feat(sim, s2)
             p_send = torch.sigmoid(pol.enc(torch.cat([b2, xf], 1))).squeeze(1)
             send = torch.bernoulli(p_send) if stochastic else (p_send > 0.5).float()
+            if force_send is not None:
+                send = torch.full_like(send, float(force_send))
             # silence reweights every particle by the probability the encoder stayed quiet
             pf = _feat(sim, p2).reshape(B, N, -1)
             q = torch.sigmoid(pol.enc(torch.cat([b2[:, None, :].expand(B, N, -1), pf], 2))).squeeze(2)
             w = 1 - (q if stochastic else (q > 0.5).float())
+            if force_send == 0:
+                w = torch.ones_like(w)
             w = torch.where(w.sum(1, keepdim=True) > 1e-8, w, torch.ones_like(w))
             resampled = torch.gather(part2, 1, torch.multinomial(w, N, replacement=True))
             sent = send.bool()
@@ -138,21 +143,23 @@ def value_of(ro: Rollout, gamma: float) -> tuple[float, float, float]:
     return total.mean().item(), (total.std() / total.numel() ** 0.5).item(), sends
 
 
-def evaluate(sim, pol: Policies, beta: float, n_episodes: int = 2000, horizon: int = 25, seed: int = 123):
+def evaluate(sim, pol: Policies, beta: float, n_episodes: int = 2000, horizon: int = 25, seed: int = 123,
+             force_send: int | None = None):
     """Net value of the greedy policies, with a standard error and the send rate."""
-    ro = rollout(sim, pol, beta, n_episodes, horizon, np.random.default_rng(seed), stochastic=False)
+    ro = rollout(sim, pol, beta, n_episodes, horizon, np.random.default_rng(seed), stochastic=False, force_send=force_send)
     return value_of(ro, sim.gamma)
 
 
 def train(sim, beta: float, updates: int = 300, n_episodes: int = 256, horizon: int = 25, hidden: int = 64,
-          lr: float = 3e-3, entropy: float = 0.02, seed: int = 0, log=None) -> Policies:
+          lr: float = 3e-3, entropy: float = 0.02, seed: int = 0, log=None, force_send: int | None = None) -> Policies:
+    """Train jointly. ``force_send`` 0 or 1 fixes the encoder (never / always send) and trains the decoder alone."""
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     d = sim.features_batch(np.array([sim.sample_initial(rng)])).shape[1]
     pol = Policies(d, sim.n_actions, hidden)
     opt = torch.optim.Adam(pol.parameters(), lr=lr)
     for it in range(updates):
-        ro = rollout(sim, pol, beta, n_episodes, horizon, rng)
+        ro = rollout(sim, pol, beta, n_episodes, horizon, rng, force_send=force_send)
         G, _ = _returns(ro, sim.gamma)
         H = horizon
         din = torch.stack(ro.dec_in); dx = torch.stack(ro.dec_x); da = torch.stack(ro.dec_a)
@@ -166,9 +173,9 @@ def train(sim, beta: float, updates: int = 300, n_episodes: int = 256, horizon: 
         dist_e = torch.distributions.Bernoulli(logits=pol.enc(torch.cat([ein, ex], 2)).squeeze(2))
         loss = (
             -(dist_d.log_prob(da) * adv_d / scale).mean()
-            - (dist_e.log_prob(es) * adv_e / scale).mean()
+            - (0.0 if force_send is not None else 1.0) * (dist_e.log_prob(es) * adv_e / scale).mean()
             + 0.5 * (((Gd - vd) ** 2).mean() + ((Ge - ve) ** 2).mean())
-            - entropy * (dist_d.entropy().mean() + dist_e.entropy().mean())
+            - entropy * (dist_d.entropy().mean() + (0.0 if force_send is not None else dist_e.entropy().mean()))
         )
         opt.zero_grad(); loss.backward()
         nn.utils.clip_grad_norm_(pol.parameters(), 1.0)

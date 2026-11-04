@@ -158,6 +158,21 @@ reminder that there is no certificate once the policy is learned.
 
 ![POMCP and learned policies against the exact bounds](figures/validation.png)
 
+### A grid with 64 states
+
+`experiments/large.py` runs the learned policies on an 8×8 slippery GridWorld
+(64 states, far beyond the exact solver) and compares them with never
+transmitting (best decoder trained alone) and always transmitting (exact).
+
+![Learned policies on an 8x8 grid](figures/large_8.png)
+
+The learned policy beats both baselines at moderate cost and transmits less as
+the cost grows (98%, 62%, 28%, 10% of steps for β = 0.02, 0.05, 0.1, 0.2). At
+β = 0.2 it ends *below* never-transmit (3.43 against 3.57), which a better
+optimiser would not: staying silent is always available. That is a training
+shortfall, not a property of the problem, and the result there should be read as
+a lower bound.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
