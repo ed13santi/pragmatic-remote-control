@@ -156,6 +156,8 @@ minute of CPU. The control result is slightly below the exact lower bound, a
 reminder that there is no certificate once the policy is learned.
 `pip install -e ".[neural]"` to use it.
 
+![POMCP and learned policies against the exact bounds](figures/validation.png)
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
