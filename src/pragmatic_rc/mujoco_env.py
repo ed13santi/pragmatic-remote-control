@@ -151,7 +151,9 @@ def render_gif(frames, path: str, fps: int = 25, size=(300, 400)) -> None:
         data.qpos[:], data.qvel[:] = state[:2], state[2:]
         mujoco.mj_forward(model, data)
         renderer.update_scene(data, camera=cam)
-        return renderer.render().copy()
+        img = renderer.render().copy()
+        img[img.max(axis=2) < 12] = (242, 242, 238)  # light background, so a black panel means no signal
+        return img
 
     images = []
     for f in frames:

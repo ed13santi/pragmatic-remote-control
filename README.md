@@ -212,6 +212,32 @@ tuning, so treat these as a working pipeline rather than a result about the
 method. There is no exact solution to compare against.
 `pip install -e ".[ppo]"`; `python experiments/pendulum.py joint`.
 
+### MuJoCo cart-pole
+
+`pragmatic_rc.mujoco_env` applies the same construction to Gymnasium's MuJoCo
+InvertedPendulum model: keep the pole up, earning 1 per step, with the episode
+ending when it falls. Randomness comes from noise on the actuator, which the real
+system and every belief particle experience. All particles advance in a single
+`mujoco.rollout` call. The pole is unstable, so the controller cannot go long
+without information.
+
+![Controller view (black when nothing arrives) and the MuJoCo cart-pole](figures/cartpole_0.5.gif)
+
+Score is steps survived out of 200 minus 0.5 per transmission (higher is better,
+100 episodes, 1M PPO decisions each, one seed):
+
+| Policy | Score | Transmissions per episode |
+| --- | --- | --- |
+| Never transmit (controller trained alone) | 14 ± 1 | 0 |
+| Always transmit (controller trained alone) | 100 | 200 |
+| Joint (learns when to send) | 185 ± 2 | 22 |
+
+Without updates the pole falls within about 14 steps. Transmitting every step
+keeps it up but pays for 200 messages. The joint policy keeps the pole up almost
+as reliably with about one message in nine. One seed, no tuning, and no exact
+solution to compare against. `pip install -e ".[mujoco]"`;
+`python experiments/mujoco_pendulum.py joint`.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
@@ -290,6 +316,7 @@ src/pragmatic_rc/
     neural.py     learned encoder/decoder (actor-critic, PyTorch)
     pendulum.py   noisy pendulum as a Gymnasium environment, GIF renderer
     ppo.py        Stable-Baselines3 PPO training and evaluation
+    mujoco_env.py MuJoCo cart-pole as a Gymnasium environment, GIF renderer
     envs.py       simulators for sampling-based planning (tabular, GridWorld)
 experiments/      scripts that regenerate every figure
 tests/            55 tests
