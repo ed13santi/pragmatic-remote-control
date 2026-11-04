@@ -16,6 +16,7 @@ against exhaustive search, simulation and each other:
 | --- | --- | --- |
 | **Alternating** policy iteration (API) | `pragmatic_rc.push` | A Nash equilibrium of the encoder/decoder game. Fast, not always optimal. The decoder step is an exact best response; in control that takes a search over action sequences. |
 | **Optimal** joint policy (HSVI on the coordinator POMDP) | `pragmatic_rc.optimal` | An ε-optimal value with a certified lower and upper bound, and the policy that achieves it. |
+| **POMCP** on the coordinator POMDP | `pragmatic_rc.pomcp` | Sampling-based planning for state spaces too large for the exact solver. Needs only a simulator; searches a restricted family of encoder rules. |
 | Pull-based modified policy iteration (MPI) | `pragmatic_rc.pull` | A policy for the case where only the decoder decides when to communicate. Reaches local optima, so use `restarts`. |
 
 Edoardo David Santi contributed the alternating and optimal algorithms to the
@@ -116,6 +117,27 @@ bounds sit above the value of every alternating and pull-based policy; and the
 extracted policy, executed by tracking the belief in simulation, earns a
 return that matches the bounds.
 
+## POMCP for large state spaces
+
+`optimal.solve` is exact but limited to a handful of states. `pragmatic_rc.pomcp`
+runs Monte Carlo tree search (POMCP) on the same two-phase coordinator POMDP and
+only needs a simulator (`envs.Simulator`: `sample_initial`, `step`, `features`).
+Two ingredients make it work here:
+
+* **Encoder rule families.** The encoder cannot choose an arbitrary subset of a
+  huge state space, so the planner picks among rules such as "transmit if the
+  state is further than `theta` from the decoder's belief mean"
+  (`DistanceFromMean`) or "transmit if the decoder gives it mass below `theta`"
+  (`BeliefMassThreshold`). The result is a lower bound on the optimum.
+  `AllSubsets` recovers the full problem on tiny instances.
+* **Shared renewal nodes.** A transmission makes the belief a point mass, so every
+  history ending in the same transmitted state shares one subtree.
+
+On a 3-state estimation problem POMCP with `AllSubsets` reaches 4.41 ± 0.03
+against certified bounds of 4.38 – 4.43. `envs.GridWorld(n)` gives a state space
+that grows as `n²`. Continuous states (MuJoCo) would additionally need
+discretised observations or progressive widening, which is not implemented.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
@@ -157,7 +179,7 @@ alternating methods on 30-state problems:
 
 ## Limitations
 
-* **Small state spaces.** The optimal solver enumerates all `2^S` transmission
+* **Small state spaces (exact solver).** The optimal solver enumerates all `2^S` transmission
   rules per belief, and the exploration is exponential in the worst case.
   It is a reference solver for problems of a handful of states.
 * **Truncation in the alternating and pull-based solvers.** A transmission is
@@ -190,8 +212,10 @@ src/pragmatic_rc/
     push.py       alternating policy iteration, exact evaluation
     optimal.py    coordinator POMDP and HSVI, policy execution
     simulate.py   Monte Carlo simulators for the pull and push policies
+    pomcp.py      POMCP planner with encoder rule families
+    envs.py       simulators for sampling-based planning (tabular, GridWorld)
 experiments/      scripts that regenerate every figure
-tests/            50 tests
+tests/            53 tests
 ```
 
 ## Citation
