@@ -1,0 +1,1 @@
+{"task": "inverted_pendulum_kicks", "kind": "threshold_learned", "value": 0.0, "score": 144.73, "se": 7.193986516528926, "sends": 24.22, "steps": 500000}
