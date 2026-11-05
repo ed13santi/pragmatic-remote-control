@@ -16,6 +16,7 @@ for ax, task in zip(axes[0], tasks):
     for r in th:
         ax.annotate(f"θ={r['value']}", (r["sends"], r["score"]), fontsize=7, xytext=(3, 3), textcoords="offset points")
     for kind, color, label in [("joint", "#2a7f62", "learned"), ("joint_rich", "#1f3b73", "learned, richer belief"),
+                               ("threshold_learned", "#8e44ad", "learned threshold θ(belief)"),
                                ("always", "#d9822b", "always send")]:
         for r in rs:
             if r["kind"] == kind:
