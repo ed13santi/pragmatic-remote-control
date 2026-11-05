@@ -238,6 +238,35 @@ as reliably with about one message in nine. One seed, no tuning, and no exact
 solution to compare against. `pip install -e ".[mujoco]"`;
 `python experiments/mujoco_pendulum.py joint`.
 
+### Three more MuJoCo tasks
+
+`pragmatic_rc.mujoco_env` is task-configurable (Gymnasium's v5 models and rewards).
+MuJoCo is deterministic, so the only randomness is Gaussian noise I add to the
+actuators, which the real system and every belief particle share; without it the
+decoder could simulate the system exactly and nothing would need sending. The
+noise levels and transmission costs below are my own choices, not a standard
+benchmark. Score is the task's return minus β per transmission (higher is better;
+50 episodes, one seed each).
+
+| Task | Actuator noise | β | Joint (learns when to send) | Always transmit | Never transmit |
+| --- | --- | --- | --- | --- | --- |
+| Double pendulum, 200 steps, 1M decisions | 0.15 | 3.0 | **1539 ± 47** (68 sends) | 1271 (200) | 96 ± 3 |
+| Reacher, 50 steps, 0.6M decisions | 0.3 | 0.05 | **−7.3 ± 0.4** (3.4 sends) | −8.3 ± 0.3 (50) | −8.6 ± 0.3 |
+| Hopper, up to 200 steps, 1.5M decisions | 0.3 | 0.5 | **564 ± 11** (13 sends) | 465 ± 3 (165) | 162 ± 7 |
+
+![Double pendulum](figures/inverted_double_pendulum_3.0.gif)
+![Reacher](figures/reacher_0.05.gif)
+![Hopper](figures/hopper_0.5.gif)
+
+The joint policy beats both baselines on all three while sending far less often.
+Two caveats. On Reacher the two baselines are close, because a stable arm loses
+accuracy gradually when it hears nothing, so the task only weakly needs
+communication at this noise level. On Hopper the belief particles stay tightly
+bunched under this noise, so it is the least informative of the three about the
+value of communicating. In the Hopper and always-transmit rows, episodes can end
+early when the hopper falls (always transmit averages 165 steps).
+`python experiments/mujoco_task.py hopper joint 0.5 1500000` reproduces a row.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
@@ -316,7 +345,7 @@ src/pragmatic_rc/
     neural.py     learned encoder/decoder (actor-critic, PyTorch)
     pendulum.py   noisy pendulum as a Gymnasium environment, GIF renderer
     ppo.py        Stable-Baselines3 PPO training and evaluation
-    mujoco_env.py MuJoCo cart-pole as a Gymnasium environment, GIF renderer
+    mujoco_env.py MuJoCo tasks as Gymnasium environments, GIF renderer
     envs.py       simulators for sampling-based planning (tabular, GridWorld)
 experiments/      scripts that regenerate every figure
 tests/            55 tests
