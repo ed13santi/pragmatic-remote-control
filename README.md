@@ -267,6 +267,42 @@ value of communicating. In the Hopper and always-transmit rows, episodes can end
 early when the hopper falls (always transmit averages 165 steps).
 `python experiments/mujoco_task.py hopper joint 0.5 1500000` reproduces a row.
 
+### When do threshold encoders suffice? Jumps and hidden modes
+
+Threshold rules (send when the state is far from the decoder's belief) are the
+standard event-triggered design, and for smooth dynamics they are often optimal.
+Two cart-pole variants test whether jumps break that: random impulse kicks to the
+cart velocity, and a hidden actuator sign that flips at random (the controller
+must find out when its commands have reversed). Three families of encoder are
+compared, all with a learned controller:
+
+* a **fixed threshold** on the largest feature error against the belief mean, swept over θ;
+* a **learned binary send policy**, with and without a richer belief summary
+  (10% and 90% quantiles);
+* a **learned state-dependent threshold**: the policy picks θ from the belief alone
+  at every step, and the encoder sends when its error exceeds it. The coordinator's
+  action is one number rather than a function over states, and the belief update is exact because the rule is known.
+
+![Score against transmissions on the jump tasks](figures/jumps.png)
+
+Score is steps survived out of 200 minus 0.5 per transmission (higher is better;
+50 episodes, 500k PPO decisions, one seed).
+
+| Encoder | Sign flips | Kicks |
+| --- | --- | --- |
+| Always send | 100 (200 sends) | 85 ± 4 (169) |
+| Learned binary send policy | 37 ± 4 (11) | 141 ± 8 (26) |
+| Best fixed threshold | 185.2 ± 0.2 (30), θ = 0.2 | 153 ± 7 (27), θ = 0.1 |
+| Learned θ(belief) | **188.5 ± 0.2** (23) | 145 ± 7 (24) |
+
+What this shows: the threshold parametrisation is much easier to learn than the
+unstructured binary policy, which failed on the sign-flip task. A state-dependent
+threshold edges out the best fixed one there and is within noise of it on kicks.
+I did not find a task where thresholds fail: a kick or a flip produces a large
+error that the rule detects. One seed, so the small differences are not
+established. Reproduce with `experiments/run_jumps.sh` and
+`experiments/run_threshold_learned.sh`.
+
 ## Results
 
 Value of the best policy found by each method on small random problems (seed 1,
