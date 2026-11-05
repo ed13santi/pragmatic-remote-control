@@ -1,23 +1,25 @@
-"""Remote control of a MuJoCo cart-pole (Gymnasium's InvertedPendulum model).
+"""Remote control of MuJoCo tasks, as Gymnasium environments for PPO.
 
 Same construction as :mod:`pragmatic_rc.pendulum`: one agent plays encoder and
 decoder in alternating phases, and the environment keeps the decoder's belief as
 a particle set that is reweighted by the probability that the encoder stayed
-silent. The physics is MuJoCo; all particles are advanced in one call to
-``mujoco.rollout``.
+silent. The physics is MuJoCo; the true state and all particles advance together
+in one call to ``mujoco.rollout``.
 
-The task is to keep the pole upright. Every step the pole is still up earns 1 and
-the episode ends when it falls (|angle| > 0.2). The pole is unstable, so the
-controller must keep up with the state, but a decoder that models the dynamics
-can balance blind for a few steps. Randomness comes from noise on the actuator,
-which both the real system and the particles experience.
+Randomness comes from noise on the actuators, which the real system and every
+particle experience. The first state is revealed for free. The score of an
+episode is the task's return minus ``beta`` per transmission.
 
-The score of an episode is steps survived minus ``beta`` per transmission.
+Tasks (Gymnasium's v5 models and rewards): ``inverted_pendulum`` (cart-pole),
+``inverted_double_pendulum``, ``reacher`` and ``hopper``. Add a task by writing a
+:class:`Task`.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from typing import Callable
 
 import gymnasium as gym
 import mujoco
@@ -26,32 +28,146 @@ import torch
 from gymnasium import spaces
 from mujoco import rollout
 
-FRAME_SKIP = 2
-CTRL_LIMIT = 3.0
-ANGLE_LIMIT = 0.2
-SCALE = np.array([1.0, 0.2, 3.0, 3.0])  # rough size of (cart x, pole angle, cart v, pole omega)
 SINCE_CAP = 10
-_SPEC = mujoco.mjtState.mjSTATE_FULLPHYSICS
 
 
-def model_path() -> str:
-    return os.path.join(os.path.dirname(gym.__file__), "envs", "mujoco", "assets", "inverted_pendulum.xml")
+def asset(name: str) -> str:
+    return os.path.join(os.path.dirname(gym.__file__), "envs", "mujoco", "assets", name + ".xml")
 
 
-def features(p: np.ndarray) -> np.ndarray:
-    return p / SCALE
+@dataclass
+class Task:
+    xml: str
+    frame_skip: int
+    ctrl_scale: float  # action 1.0 maps to this control value
+    noise: float  # actuator noise, in control units
+    horizon: int
+    beta: float
+    reward_scale: float
+    n_feat: int
+    features: Callable  # (..., nstate) -> (..., n_feat)
+    reset: Callable  # (model, rng) -> state
+    reward: Callable  # (env, prev_state, new_state, u) -> (reward, terminated)
+    camera: Callable  # (state) -> (lookat, distance, azimuth, elevation)
 
 
-class RemoteControlInvertedPendulum(gym.Env):
+# ---- cart-pole -----------------------------------------------------------------
+
+_IP_SCALE = np.array([1.0, 0.2, 3.0, 3.0])
+
+
+def _ip_reward(env, prev, new, u):
+    fell = bool(abs(new[1]) > 0.2)
+    return (0.0 if fell else 1.0), fell
+
+
+# ---- double pendulum -----------------------------------------------------------
+
+_IDP_SCALE = np.array([1.0, 0.3, 0.3, 3.0, 3.0, 3.0])
+
+
+def _idp_reward(env, prev, new, u):
+    env.kin.qpos[:], env.kin.qvel[:] = new[:3], new[3:]
+    mujoco.mj_kinematics(env.model, env.kin)
+    x, _, y = env.kin.site_xpos[0]
+    penalty = 0.01 * x**2 + (y - 2) ** 2 + 1e-3 * new[4] ** 2 + 5e-3 * new[5] ** 2
+    terminated = bool(y <= 1)
+    return (0.0 if terminated else 10.0 - penalty), terminated
+
+
+# ---- reacher -------------------------------------------------------------------
+
+
+def _reacher_tip(s):
+    q0, q1 = s[..., 0], s[..., 1]
+    return np.stack([0.1 * np.cos(q0) + 0.11 * np.cos(q0 + q1), 0.1 * np.sin(q0) + 0.11 * np.sin(q0 + q1)], axis=-1)
+
+
+def _reacher_features(s):
+    tip, target = _reacher_tip(s), s[..., 2:4]
+    return np.concatenate(
+        [np.cos(s[..., :2]), np.sin(s[..., :2]), target / 0.2, (tip - target) / 0.2, s[..., 4:6] / 5.0], axis=-1
+    )
+
+
+def _reacher_reset(model, rng):
+    qpos = rng.uniform(-0.1, 0.1, model.nq) + model.qpos0
+    while True:
+        goal = rng.uniform(-0.2, 0.2, 2)
+        if np.linalg.norm(goal) < 0.2:
+            break
+    qpos[2:] = goal
+    qvel = 0.005 * rng.standard_normal(model.nv)
+    qvel[2:] = 0.0
+    return np.concatenate([qpos, qvel])
+
+
+def _reacher_reward(env, prev, new, u):
+    dist = np.linalg.norm(_reacher_tip(new) - new[2:4])
+    return -dist - float(np.sum(u**2)), False
+
+
+# ---- hopper --------------------------------------------------------------------
+
+_HOPPER_SCALE = np.array([1.0, 0.3, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0])
+
+
+def _hopper_features(s):
+    return np.clip(s[..., 1:] / _HOPPER_SCALE, -10, 10)  # drop the horizontal position
+
+
+def _hopper_reward(env, prev, new, u):
+    healthy = bool(new[1] > 0.7 and abs(new[2]) < 0.2 and np.all(np.abs(new[2:]) < 100))
+    vel = (new[0] - prev[0]) / env.dt
+    return vel + (1.0 if healthy else 0.0) - 1e-3 * float(np.sum(u**2)), not healthy
+
+
+def _hopper_reset(model, rng):
+    return np.concatenate([model.qpos0, np.zeros(model.nv)]) + rng.uniform(-0.005, 0.005, model.nq + model.nv)
+
+
+TASKS = {
+    "inverted_pendulum": Task(
+        "inverted_pendulum", 2, 3.0, 0.5, 200, 0.5, 0.1, 4, lambda s: s / _IP_SCALE,
+        lambda m, r: r.uniform(-0.01, 0.01, 4), _ip_reward, lambda s: ([0, 0, 0.3], 2.6, 90, 0),
+    ),
+    "inverted_double_pendulum": Task(
+        "inverted_double_pendulum", 5, 1.0, 0.15, 200, 3.0, 0.1, 6, lambda s: s / _IDP_SCALE,
+        lambda m, r: np.concatenate([r.uniform(-0.1, 0.1, 3), 0.1 * r.standard_normal(3)]), _idp_reward,
+        lambda s: ([0, 0, 0.8], 4.5, 90, 0),
+    ),
+    "reacher": Task(
+        "reacher", 2, 1.0, 0.3, 50, 0.02, 1.0, 10, _reacher_features, _reacher_reset, _reacher_reward,
+        lambda s: ([0, 0, 0], 0.9, 90, -90),
+    ),
+    "hopper": Task(
+        "hopper", 4, 1.0, 0.3, 200, 1.0, 0.1, 11, _hopper_features, _hopper_reset, _hopper_reward,
+        lambda s: ([float(s[0]), 0, 0.8], 3.5, 90, 0),
+    ),
+}
+
+
+class RemoteControlMujoco(gym.Env):
+    """Action: the control for each actuator, then a send logit (send if positive)."""
+
     metadata = {"render_modes": []}
 
-    def __init__(self, beta=0.5, horizon=200, noise=0.5, n_particles=64, force_send=None, reward_scale=0.1):
-        self.beta, self.horizon, self.noise, self.N = beta, horizon, noise, n_particles
-        self.force_send, self.scale = force_send, reward_scale
-        self.model = mujoco.MjModel.from_xml_path(model_path())
-        self.data = mujoco.MjData(self.model)
-        self.observation_space = spaces.Box(-np.inf, np.inf, (14,), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
+    def __init__(self, task="inverted_pendulum", beta=None, horizon=None, noise=None, n_particles=64,
+                 force_send=None, reward_scale=None):
+        self.task = TASKS[task] if isinstance(task, str) else task
+        t = self.task
+        self.beta = t.beta if beta is None else beta
+        self.horizon = t.horizon if horizon is None else horizon
+        self.noise = t.noise if noise is None else noise
+        self.scale = t.reward_scale if reward_scale is None else reward_scale
+        self.N, self.force_send = n_particles, force_send
+        self.model = mujoco.MjModel.from_xml_path(asset(t.xml))
+        self.data, self.kin = mujoco.MjData(self.model), mujoco.MjData(self.model)
+        self.nu = self.model.nu
+        self.dt = self.model.opt.timestep * t.frame_skip
+        self.lo, self.hi = self.model.actuator_ctrlrange[:, 0], self.model.actuator_ctrlrange[:, 1]
+        self.observation_space = spaces.Box(-np.inf, np.inf, (3 * t.n_feat + 2,), np.float32)
+        self.action_space = spaces.Box(-1.0, 1.0, (self.nu + 1,), np.float32)
         self.policy = None
         self.stochastic_filter = True
         self.rng = np.random.default_rng()
@@ -60,17 +176,16 @@ class RemoteControlInvertedPendulum(gym.Env):
         self.policy = policy
 
     # -- physics
-    def _advance(self, P: np.ndarray, u: float) -> np.ndarray:
-        """Advance a batch of states ``(K, 4)`` by one control step under actuator noise."""
+    def _advance(self, P: np.ndarray, u: np.ndarray) -> np.ndarray:
         K = len(P)
         init = np.concatenate([np.zeros((K, 1)), P], axis=1)
-        ctrl = np.clip(u + self.noise * self.rng.standard_normal((K, FRAME_SKIP, 1)), -CTRL_LIMIT, CTRL_LIMIT)
-        out, _ = rollout.rollout(self.model, self.data, init, ctrl)
-        return out[:, -1, 1:5]
+        ctrl = u + self.noise * self.rng.standard_normal((K, self.task.frame_skip, self.nu))
+        out, _ = rollout.rollout(self.model, self.data, init, np.clip(ctrl, self.lo, self.hi))
+        return out[:, -1, 1:]
 
     # -- belief
     def _summary(self) -> np.ndarray:
-        f = features(self.P)
+        f = self.task.features(self.P)
         return np.concatenate([f.mean(0), f.std(0), [min(self.since, SINCE_CAP) / SINCE_CAP]])
 
     def _obs(self, b, x_feat, phase) -> np.ndarray:
@@ -81,10 +196,10 @@ class RemoteControlInvertedPendulum(gym.Env):
             return np.ones(self.N)
         if self.policy is None:
             return np.full(self.N, 0.5)
-        obs = np.concatenate([np.tile(b2, (self.N, 1)), features(self.P), np.ones((self.N, 1))], axis=1)
+        obs = np.concatenate([np.tile(b2, (self.N, 1)), self.task.features(self.P), np.ones((self.N, 1))], axis=1)
         with torch.no_grad():
             d = self.policy.get_distribution(torch.as_tensor(obs, dtype=torch.float32)).distribution
-            p_send = torch.special.ndtr(d.mean[:, 1] / d.stddev[:, 1]).numpy()
+            p_send = torch.special.ndtr(d.mean[:, -1] / d.stddev[:, -1]).numpy()
         if not self.stochastic_filter:
             p_send = (p_send > 0.5).astype(float)
         return 1.0 - p_send
@@ -94,26 +209,27 @@ class RemoteControlInvertedPendulum(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        self.x = self.rng.uniform(-0.01, 0.01, size=4)
+        self.x = self.task.reset(self.model, self.rng)
         self.P = np.tile(self.x, (self.N, 1))  # the first state is revealed for free
         self.since, self.t, self.phase = 0, 0, 0
         self.received = self.x.copy()
-        return self._obs(self._summary(), np.zeros(4), 0), {}
+        return self._obs(self._summary(), np.zeros(self.task.n_feat), 0), {}
 
     def step(self, action):
         a = np.clip(np.asarray(action, dtype=float), -1, 1)
         if self.phase == 0:
-            u = CTRL_LIMIT * a[0]
+            u = np.clip(self.task.ctrl_scale * a[: self.nu], self.lo, self.hi)
+            prev = self.x
             both = self._advance(np.vstack([self.x[None], self.P]), u)
             self.x, self.P = both[0], both[1:]
             self.since += 1
             self.t += 1
-            fell = bool(abs(self.x[1]) > ANGLE_LIMIT)
+            reward, terminated = self.task.reward(self, prev, self.x, u)
             self.b2 = self._summary()
             self.phase = 1
             info = dict(sent=False, x=self.x.copy(), u=u)
-            return self._obs(self.b2, features(self.x), 1), 0.0 if fell else self.scale, fell, False, info
-        send = bool(a[1] > 0) if self.force_send is None else bool(self.force_send)
+            return self._obs(self.b2, self.task.features(self.x), 1), reward * self.scale, terminated, False, info
+        send = bool(a[-1] > 0) if self.force_send is None else bool(self.force_send)
         w = self._quiet_weights(self.b2)
         if send:
             self.P = np.tile(self.x, (self.N, 1))
@@ -126,30 +242,40 @@ class RemoteControlInvertedPendulum(gym.Env):
         self.phase = 0
         truncated = self.t >= self.horizon
         info = dict(sent=send, x=self.x.copy(), received=self.received.copy())
-        return self._obs(self._summary(), np.zeros(4), 0), -self.beta * self.scale * send, False, truncated, info
+        return self._obs(self._summary(), np.zeros(self.task.n_feat), 0), -self.beta * self.scale * send, False, truncated, info
+
+
+class RemoteControlInvertedPendulum(RemoteControlMujoco):
+    """The cart-pole task (kept as its own name for the saved cart-pole models)."""
+
+    def __init__(self, **kw):
+        super().__init__(task="inverted_pendulum", **kw)
 
 
 # ---- rendering ---------------------------------------------------------------
 
 
-def render_gif(frames, path: str, fps: int = 25, size=(300, 400)) -> None:
-    """Side-by-side GIF. Left: what the controller sees (the state it last received,
-    shown only on the step it arrives, black otherwise). Right: the real system."""
+def render_gif(frames, path: str, task: str = "inverted_pendulum", fps: int = 25, size=(300, 400)) -> None:
+    """Side-by-side GIF. Left: what the controller sees (the state it just received,
+    black on steps with no update). Right: the real system."""
     import imageio.v2 as imageio
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    model = mujoco.MjModel.from_xml_path(model_path())
+    spec = TASKS[task]
+    model = mujoco.MjModel.from_xml_path(asset(spec.xml))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, *size)
     cam = mujoco.MjvCamera()
-    cam.type, cam.lookat[:], cam.distance, cam.azimuth, cam.elevation = mujoco.mjtCamera.mjCAMERA_FREE, [0, 0, 0.3], 2.6, 90, 0
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
 
     def picture(state):
-        data.qpos[:], data.qvel[:] = state[:2], state[2:]
+        data.qpos[:], data.qvel[:] = state[: model.nq], state[model.nq :]
         mujoco.mj_forward(model, data)
+        lookat, cam.distance, cam.azimuth, cam.elevation = spec.camera(state)
+        cam.lookat[:] = lookat
         renderer.update_scene(data, camera=cam)
         img = renderer.render().copy()
         img[img.max(axis=2) < 12] = (242, 242, 238)  # light background, so a black panel means no signal
@@ -158,7 +284,7 @@ def render_gif(frames, path: str, fps: int = 25, size=(300, 400)) -> None:
     images = []
     for f in frames:
         fig, (left, right) = plt.subplots(1, 2, figsize=(8, 3.3), dpi=80)
-        right.imshow(picture(f["x"])); right.set_title("Cart-pole", fontsize=11)
+        right.imshow(picture(f["x"])); right.set_title("True system", fontsize=11)
         if f["received"] is None:
             left.imshow(np.zeros((size[0], size[1], 3), dtype=np.uint8))
             left.set_title("Controller view: no signal", fontsize=11)
