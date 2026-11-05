@@ -400,3 +400,7 @@ tests/            55 tests
 ```
 
 Licensed under Apache 2.0.
+
+### Longer training on the sign-flip task
+
+The binary learned policy scored 37 after 500k steps. After 3M steps it scores 184.9 (entropy bonus 0.01: 180.2), matching the fixed threshold (185) and close to the learned state-dependent threshold (188.5). The earlier gap came from under-training, not from the policy class.
