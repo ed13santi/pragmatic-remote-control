@@ -49,6 +49,9 @@ class Task:
     reset: Callable  # (model, rng) -> state
     reward: Callable  # (env, prev_state, new_state, u) -> (reward, terminated)
     camera: Callable  # (state) -> (lookat, distance, azimuth, elevation)
+    kick_prob: float = 0.0  # chance per step of a sudden jump in the first velocity
+    kick_size: float = 0.0
+    switch_prob: float = 0.0  # chance per step that a hidden actuator sign flips (adds a state variable)
 
 
 # ---- cart-pole -----------------------------------------------------------------
@@ -131,6 +134,18 @@ TASKS = {
         "inverted_pendulum", 2, 3.0, 0.5, 200, 0.5, 0.1, 4, lambda s: s / _IP_SCALE,
         lambda m, r: r.uniform(-0.01, 0.01, 4), _ip_reward, lambda s: ([0, 0, 0.3], 2.6, 90, 0),
     ),
+    # Jump variants of the cart-pole: the belief is no longer a single smooth blob.
+    "inverted_pendulum_kicks": Task(
+        "inverted_pendulum", 2, 3.0, 0.2, 200, 0.5, 0.1, 4, lambda s: s / _IP_SCALE,
+        lambda m, r: r.uniform(-0.01, 0.01, 4), _ip_reward, lambda s: ([0, 0, 0.3], 2.6, 90, 0),
+        kick_prob=0.05, kick_size=1.5,
+    ),
+    "inverted_pendulum_switching": Task(
+        "inverted_pendulum", 2, 3.0, 0.3, 200, 0.5, 0.1, 5,
+        lambda s: np.concatenate([s[..., :4] / _IP_SCALE, s[..., 4:5]], axis=-1),
+        lambda m, r: np.concatenate([r.uniform(-0.01, 0.01, 4), [1.0]]), _ip_reward,
+        lambda s: ([0, 0, 0.3], 2.6, 90, 0), switch_prob=0.03,
+    ),
     "inverted_double_pendulum": Task(
         "inverted_double_pendulum", 5, 1.0, 0.15, 200, 3.0, 0.1, 6, lambda s: s / _IDP_SCALE,
         lambda m, r: np.concatenate([r.uniform(-0.1, 0.1, 3), 0.1 * r.standard_normal(3)]), _idp_reward,
@@ -153,7 +168,7 @@ class RemoteControlMujoco(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, task="inverted_pendulum", beta=None, horizon=None, noise=None, n_particles=64,
-                 force_send=None, reward_scale=None):
+                 force_send=None, reward_scale=None, threshold=None, rich=False):
         self.task = TASKS[task] if isinstance(task, str) else task
         t = self.task
         self.beta = t.beta if beta is None else beta
@@ -161,12 +176,15 @@ class RemoteControlMujoco(gym.Env):
         self.noise = t.noise if noise is None else noise
         self.scale = t.reward_scale if reward_scale is None else reward_scale
         self.N, self.force_send = n_particles, force_send
+        self.threshold, self.rich = threshold, rich  # threshold: send if the feature error exceeds it
         self.model = mujoco.MjModel.from_xml_path(asset(t.xml))
         self.data, self.kin = mujoco.MjData(self.model), mujoco.MjData(self.model)
         self.nu = self.model.nu
+        self.n_phys = self.model.nq + self.model.nv
         self.dt = self.model.opt.timestep * t.frame_skip
         self.lo, self.hi = self.model.actuator_ctrlrange[:, 0], self.model.actuator_ctrlrange[:, 1]
-        self.observation_space = spaces.Box(-np.inf, np.inf, (3 * t.n_feat + 2,), np.float32)
+        self.n_summary = (4 if rich else 2) * t.n_feat + 1
+        self.observation_space = spaces.Box(-np.inf, np.inf, (self.n_summary + t.n_feat + 1,), np.float32)
         self.action_space = spaces.Box(-1.0, 1.0, (self.nu + 1,), np.float32)
         self.policy = None
         self.stochastic_filter = True
@@ -177,16 +195,36 @@ class RemoteControlMujoco(gym.Env):
 
     # -- physics
     def _advance(self, P: np.ndarray, u: np.ndarray) -> np.ndarray:
-        K = len(P)
-        init = np.concatenate([np.zeros((K, 1)), P], axis=1)
-        ctrl = u + self.noise * self.rng.standard_normal((K, self.task.frame_skip, self.nu))
+        K, t = len(P), self.task
+        init = np.concatenate([np.zeros((K, 1)), P[:, : self.n_phys]], axis=1)
+        if t.switch_prob > 0:  # a hidden sign flips the effect of the control
+            mode = P[:, self.n_phys]
+            drive = u[None, None, :] * mode[:, None, None]
+        else:
+            drive = u
+        ctrl = drive + self.noise * self.rng.standard_normal((K, t.frame_skip, self.nu))
         out, _ = rollout.rollout(self.model, self.data, init, np.clip(ctrl, self.lo, self.hi))
-        return out[:, -1, 1:]
+        nxt = out[:, -1, 1:].copy()
+        if t.kick_prob > 0:  # rare, sudden jumps in the cart velocity
+            kick = self.rng.random(K) < t.kick_prob
+            nxt[:, self.model.nq] += kick * self.rng.choice([-1.0, 1.0], K) * t.kick_size
+        if t.switch_prob > 0:
+            flip = self.rng.random(K) < t.switch_prob
+            nxt = np.concatenate([nxt, np.where(flip, -mode, mode)[:, None]], axis=1)
+        return nxt
 
     # -- belief
     def _summary(self) -> np.ndarray:
         f = self.task.features(self.P)
-        return np.concatenate([f.mean(0), f.std(0), [min(self.since, SINCE_CAP) / SINCE_CAP]])
+        parts = [f.mean(0), f.std(0)]
+        if self.rich:  # quantiles keep some of the shape of a multimodal belief
+            parts += [np.quantile(f, 0.1, axis=0), np.quantile(f, 0.9, axis=0)]
+        return np.concatenate(parts + [[min(self.since, SINCE_CAP) / SINCE_CAP]])
+
+    def _distance(self, states: np.ndarray) -> np.ndarray:
+        """Largest feature error between states and the mean of the belief particles."""
+        f = self.task.features(self.P)
+        return np.max(np.abs(self.task.features(states) - f.mean(0)), axis=-1)
 
     def _obs(self, b, x_feat, phase) -> np.ndarray:
         return np.concatenate([b, x_feat, [phase]]).astype(np.float32)
@@ -194,6 +232,8 @@ class RemoteControlMujoco(gym.Env):
     def _quiet_weights(self, b2: np.ndarray) -> np.ndarray:
         if self.force_send == 0:
             return np.ones(self.N)
+        if self.threshold is not None:  # exact: the rule is known, so silence rules out the far particles
+            return (self._distance(self.P) <= self.threshold).astype(float)
         if self.policy is None:
             return np.full(self.N, 0.5)
         obs = np.concatenate([np.tile(b2, (self.N, 1)), self.task.features(self.P), np.ones((self.N, 1))], axis=1)
@@ -229,7 +269,10 @@ class RemoteControlMujoco(gym.Env):
             self.phase = 1
             info = dict(sent=False, x=self.x.copy(), u=u)
             return self._obs(self.b2, self.task.features(self.x), 1), reward * self.scale, terminated, False, info
-        send = bool(a[-1] > 0) if self.force_send is None else bool(self.force_send)
+        if self.threshold is not None:
+            send = bool(self._distance(self.x[None])[0] > self.threshold)
+        else:
+            send = bool(a[-1] > 0) if self.force_send is None else bool(self.force_send)
         w = self._quiet_weights(self.b2)
         if send:
             self.P = np.tile(self.x, (self.N, 1))
