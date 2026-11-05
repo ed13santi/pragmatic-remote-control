@@ -29,6 +29,7 @@ from gymnasium import spaces
 from mujoco import rollout
 
 SINCE_CAP = 10
+THETA_LO, THETA_HI = 0.05, 2.0  # range of the learned threshold, log-scaled
 
 
 def asset(name: str) -> str:
@@ -232,8 +233,6 @@ class RemoteControlMujoco(gym.Env):
     def _quiet_weights(self, b2: np.ndarray) -> np.ndarray:
         if self.force_send == 0:
             return np.ones(self.N)
-        if self.threshold is not None:  # exact: the rule is known, so silence rules out the far particles
-            return (self._distance(self.P) <= self.threshold).astype(float)
         if self.policy is None:
             return np.full(self.N, 0.5)
         obs = np.concatenate([np.tile(b2, (self.N, 1)), self.task.features(self.P), np.ones((self.N, 1))], axis=1)
@@ -268,12 +267,19 @@ class RemoteControlMujoco(gym.Env):
             self.b2 = self._summary()
             self.phase = 1
             info = dict(sent=False, x=self.x.copy(), u=u)
-            return self._obs(self.b2, self.task.features(self.x), 1), reward * self.scale, terminated, False, info
-        if self.threshold is not None:
-            send = bool(self._distance(self.x[None])[0] > self.threshold)
+            x_feat = np.zeros(self.task.n_feat) if self.threshold == "learned" else self.task.features(self.x)
+            return self._obs(self.b2, x_feat, 1), reward * self.scale, terminated, False, info
+        theta = None
+        if self.threshold == "learned":  # the policy picks a threshold from the belief alone
+            theta = THETA_LO * (THETA_HI / THETA_LO) ** ((a[-1] + 1) / 2)
+        elif self.threshold is not None:
+            theta = self.threshold
+        if theta is not None:  # exact: the rule is known, so silence rules out the far particles
+            send = bool(self._distance(self.x[None])[0] > theta)
+            w = (self._distance(self.P) <= theta).astype(float)
         else:
             send = bool(a[-1] > 0) if self.force_send is None else bool(self.force_send)
-        w = self._quiet_weights(self.b2)
+            w = self._quiet_weights(self.b2)
         if send:
             self.P = np.tile(self.x, (self.N, 1))
             self.since = 0

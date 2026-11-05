@@ -6,6 +6,8 @@ TASK    inverted_pendulum_kicks or inverted_pendulum_switching
 KIND    always            send every step
         joint             learn when to send (belief summary: mean and spread)
         joint_rich        as joint, with 10% and 90% quantiles in the belief summary
+        threshold_learned the policy picks the threshold at every step from the belief
+                          (a state-dependent threshold); only the threshold and controller are learned
         threshold VALUE   send when the largest feature error against the belief mean
                           exceeds VALUE; only the controller is learned
 
@@ -27,6 +29,8 @@ elif kind == "joint_rich":
     kw["rich"] = True
 elif kind == "threshold":
     kw["threshold"] = value
+elif kind == "threshold_learned":
+    kw["threshold"] = "learned"
 
 model = ppo.train(kw, total_timesteps=steps, verbose=1, env_cls=RemoteControlMujoco)
 cost, se, sends = ppo.evaluate(model, kw, episodes=50, env_cls=RemoteControlMujoco)
