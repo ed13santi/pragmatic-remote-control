@@ -138,7 +138,7 @@ TASKS = {
     "inverted_pendulum_kicks": Task(
         "inverted_pendulum", 2, 3.0, 0.2, 200, 0.5, 0.1, 4, lambda s: s / _IP_SCALE,
         lambda m, r: r.uniform(-0.01, 0.01, 4), _ip_reward, lambda s: ([0, 0, 0.3], 2.6, 90, 0),
-        kick_prob=0.05, kick_size=1.5,
+        kick_prob=0.05, kick_size=0.6,
     ),
     "inverted_pendulum_switching": Task(
         "inverted_pendulum", 2, 3.0, 0.3, 200, 0.5, 0.1, 5,
