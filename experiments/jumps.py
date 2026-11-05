@@ -13,7 +13,7 @@ KIND    always            send every step
 
 Score is steps survived (of 200) minus beta per transmission (higher is better).
 """
-import json, sys
+import json, os, sys
 import torch
 from pragmatic_rc import ppo
 from pragmatic_rc.mujoco_env import RemoteControlMujoco
@@ -32,8 +32,9 @@ elif kind == "threshold":
 elif kind == "threshold_learned":
     kw["threshold"] = "learned"
 
-model = ppo.train(kw, total_timesteps=steps, verbose=1, env_cls=RemoteControlMujoco)
+ent = float(os.environ.get("ENT_COEF", 0.0))  # optional entropy bonus
+model = ppo.train(kw, total_timesteps=steps, verbose=1, env_cls=RemoteControlMujoco, ent_coef=ent)
 cost, se, sends = ppo.evaluate(model, kw, episodes=50, env_cls=RemoteControlMujoco)
 print("RESULT", task, kind, value, -cost, se, sends, flush=True)
-tag = f"jumps_{task}_{kind}_{value}"
+tag = f"jumps_{task}_{kind}_{value}" + (f"_steps{steps}_ent{ent}" if (steps != 500_000 or ent) else "")
 json.dump(dict(task=task, kind=kind, value=value, score=-cost, se=se, sends=sends, steps=steps), open(f"figures/{tag}.json", "w"))

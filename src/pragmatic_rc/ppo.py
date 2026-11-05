@@ -11,13 +11,13 @@ from .pendulum import RemoteControlPendulum
 
 
 def train(env_kwargs: dict, total_timesteps: int = 600_000, n_envs: int = 8, seed: int = 0, verbose: int = 1,
-          env_cls=RemoteControlPendulum):
+          env_cls=RemoteControlPendulum, ent_coef: float = 0.0):
     """Train one PPO agent that plays both encoder and decoder."""
     vec = VecMonitor(DummyVecEnv([lambda: env_cls(**env_kwargs) for _ in range(n_envs)]))
     model = PPO(
         "MlpPolicy", vec, device="cpu", seed=seed, verbose=verbose,
         n_steps=256, batch_size=256, n_epochs=10, learning_rate=5e-4, gamma=0.99, gae_lambda=0.95,
-        clip_range=0.2, ent_coef=0.0,
+        clip_range=0.2, ent_coef=ent_coef,
         policy_kwargs=dict(net_arch=dict(pi=[64, 64], vf=[64, 64]), log_std_init=-0.5),
     )
     for e in vec.venv.envs:
