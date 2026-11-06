@@ -16,6 +16,7 @@ KIND    always            send every step
 Score is steps survived (of 200) minus beta per transmission (higher is better).
 """
 import json, os, sys
+os.environ.setdefault("MUJOCO_GL", "egl")  # offscreen rendering for the GIF
 import torch
 from pragmatic_rc import ppo
 from pragmatic_rc.mujoco_env import RemoteControlMujoco
