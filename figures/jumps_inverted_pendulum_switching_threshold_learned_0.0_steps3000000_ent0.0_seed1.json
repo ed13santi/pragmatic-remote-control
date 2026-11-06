@@ -1,0 +1,1 @@
+{"task": "inverted_pendulum_switching", "kind": "threshold_learned", "value": 0.0, "score": 187.05, "se": 2.7448952621183924, "sends": 20.1, "steps": 3000000}
