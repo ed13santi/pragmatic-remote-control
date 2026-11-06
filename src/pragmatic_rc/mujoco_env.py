@@ -169,7 +169,7 @@ class RemoteControlMujoco(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, task="inverted_pendulum", beta=None, horizon=None, noise=None, n_particles=64,
-                 force_send=None, reward_scale=None, threshold=None, rich=False):
+                 force_send=None, reward_scale=None, threshold=None, rich=False, dist_input=False):
         self.task = TASKS[task] if isinstance(task, str) else task
         t = self.task
         self.beta = t.beta if beta is None else beta
@@ -177,7 +177,7 @@ class RemoteControlMujoco(gym.Env):
         self.noise = t.noise if noise is None else noise
         self.scale = t.reward_scale if reward_scale is None else reward_scale
         self.N, self.force_send = n_particles, force_send
-        self.threshold, self.rich = threshold, rich  # threshold: send if the feature error exceeds it
+        self.threshold, self.rich, self.dist_input = threshold, rich, dist_input  # threshold: send if the feature error exceeds it
         self.model = mujoco.MjModel.from_xml_path(asset(t.xml))
         self.data, self.kin = mujoco.MjData(self.model), mujoco.MjData(self.model)
         self.nu = self.model.nu
@@ -185,7 +185,7 @@ class RemoteControlMujoco(gym.Env):
         self.dt = self.model.opt.timestep * t.frame_skip
         self.lo, self.hi = self.model.actuator_ctrlrange[:, 0], self.model.actuator_ctrlrange[:, 1]
         self.n_summary = (4 if rich else 2) * t.n_feat + 1
-        self.observation_space = spaces.Box(-np.inf, np.inf, (self.n_summary + t.n_feat + 1,), np.float32)
+        self.observation_space = spaces.Box(-np.inf, np.inf, (self.n_summary + t.n_feat + 1 + int(dist_input),), np.float32)
         self.action_space = spaces.Box(-1.0, 1.0, (self.nu + 1,), np.float32)
         self.policy = None
         self.stochastic_filter = True
@@ -227,8 +227,9 @@ class RemoteControlMujoco(gym.Env):
         f = self.task.features(self.P)
         return np.max(np.abs(self.task.features(states) - f.mean(0)), axis=-1)
 
-    def _obs(self, b, x_feat, phase) -> np.ndarray:
-        return np.concatenate([b, x_feat, [phase]]).astype(np.float32)
+    def _obs(self, b, x_feat, phase, dist=0.0) -> np.ndarray:
+        extra = [dist] if self.dist_input else []  # precomputed distance of x from the belief mean
+        return np.concatenate([b, x_feat, [phase], extra]).astype(np.float32)
 
     def _quiet_weights(self, b2: np.ndarray) -> np.ndarray:
         if self.force_send == 0:
@@ -268,7 +269,7 @@ class RemoteControlMujoco(gym.Env):
             self.phase = 1
             info = dict(sent=False, x=self.x.copy(), u=u)
             x_feat = np.zeros(self.task.n_feat) if self.threshold == "learned" else self.task.features(self.x)
-            return self._obs(self.b2, x_feat, 1), reward * self.scale, terminated, False, info
+            return self._obs(self.b2, x_feat, 1, float(self._distance(self.x[None])[0])), reward * self.scale, terminated, False, info
         theta = None
         if self.threshold == "learned":  # the policy picks a threshold from the belief alone
             theta = THETA_LO * (THETA_HI / THETA_LO) ** ((a[-1] + 1) / 2)
