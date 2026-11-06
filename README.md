@@ -404,3 +404,13 @@ Licensed under Apache 2.0.
 ### Longer training on the sign-flip task
 
 The binary learned policy scored 37 after 500k steps. After 3M steps it scores 184.9 (entropy bonus 0.01: 180.2), matching the fixed threshold (185) and close to the learned state-dependent threshold (188.5). The earlier gap came from under-training, not from the policy class.
+
+### Seeds on the sign-flip task (3M steps, score out of 200)
+
+| Method | Seed 0 | Seed 1 | Seed 2 |
+|---|---|---|---|
+| Learned threshold | 188.5 | 187.1 | 188.5 |
+| General policy (send/no-send) | 184.9 | 167.2 | n/a |
+| General policy + distance input | 128.0 | 142.1 | 173.2 |
+
+The learned threshold is reliable across seeds. The general policy matches it on some seeds but needs about 10x more samples and varies between seeds. Giving it the distance as an input did not speed up learning.
