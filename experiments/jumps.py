@@ -45,3 +45,8 @@ cost, se, sends = ppo.evaluate(model, kw, episodes=50, env_cls=RemoteControlMujo
 print("RESULT", task, kind, value, -cost, se, sends, flush=True)
 tag = f"jumps_{task}_{kind}_{value}" + (f"_steps{steps}_ent{ent}" if (steps != 500_000 or ent) else "") + (f"_seed{seed}" if seed else "")
 json.dump(dict(task=task, kind=kind, value=value, score=-cost, se=se, sends=sends, steps=steps), open(f"figures/{tag}.json", "w"))
+model.save(f"figures/{tag}.zip")
+if kind != "always" and os.environ.get("GIF"):
+    from pragmatic_rc.mujoco_env import render_gif
+    _, _, frames = ppo.run_episode(model, kw, seed=7, log=True, env_cls=RemoteControlMujoco)
+    render_gif(frames, f"figures/{tag}.gif", task=task)
