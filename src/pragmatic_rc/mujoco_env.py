@@ -130,6 +130,23 @@ def _hopper_reset(model, rng):
     return np.concatenate([model.qpos0, np.zeros(model.nv)]) + rng.uniform(-0.005, 0.005, model.nq + model.nv)
 
 
+# ---- half-cheetah --------------------------------------------------------------
+
+_HC_SCALE = np.array([1.0, 1.0] + [1.0] * 6 + [5.0, 5.0, 5.0] + [10.0] * 6)
+
+
+def _hc_features(s):
+    return np.clip(s[..., 1:] / _HC_SCALE, -10, 10)  # drop the horizontal position
+
+
+def _hc_reward(env, prev, new, u):
+    return (new[0] - prev[0]) / env.dt - 0.1 * float(np.sum(u**2)), False
+
+
+def _hc_reset(model, rng):
+    return np.concatenate([model.qpos0 + rng.uniform(-0.1, 0.1, model.nq), 0.1 * rng.standard_normal(model.nv)])
+
+
 TASKS = {
     "inverted_pendulum": Task(
         "inverted_pendulum", 2, 3.0, 0.5, 200, 0.5, 0.1, 4, lambda s: s / _IP_SCALE,
@@ -155,6 +172,10 @@ TASKS = {
     "reacher": Task(
         "reacher", 2, 1.0, 0.3, 50, 0.02, 1.0, 10, _reacher_features, _reacher_reset, _reacher_reward,
         lambda s: ([0, 0, 0], 0.9, 90, -90),
+    ),
+    "half_cheetah": Task(
+        "half_cheetah", 5, 1.0, 0.3, 200, 1.0, 0.1, 17, _hc_features, _hc_reset, _hc_reward,
+        lambda s: ([float(s[0]), 0, 0.3], 4.0, 90, 0),
     ),
     "hopper": Task(
         "hopper", 4, 1.0, 0.3, 200, 1.0, 0.1, 11, _hopper_features, _hopper_reset, _hopper_reward,

@@ -4,6 +4,7 @@ usage: python experiments/jumps.py TASK KIND [VALUE] [timesteps]
 
 TASK    inverted_pendulum_kicks or inverted_pendulum_switching
 KIND    always            send every step
+        never             never send (the controller runs open loop on its prediction)
         joint             learn when to send (belief summary: mean and spread)
         joint_dist        as joint, with the distance of x from the belief mean given as an input
         joint_rich        as joint, with 10% and 90% quantiles in the belief summary
@@ -26,6 +27,8 @@ steps = int(sys.argv[-1]) if len(sys.argv) > (4 if kind == "threshold" else 3) e
 kw = dict(task=task)
 if kind == "always":
     kw["force_send"] = 1
+elif kind == "never":
+    kw["force_send"] = 0
 elif kind == "joint_dist":
     kw["dist_input"] = True
 elif kind == "joint_rich":
