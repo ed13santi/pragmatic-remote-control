@@ -236,7 +236,10 @@ class RemoteControlMujoco(gym.Env):
             return np.ones(self.N)
         if self.policy is None:
             return np.full(self.N, 0.5)
-        obs = np.concatenate([np.tile(b2, (self.N, 1)), self.task.features(self.P), np.ones((self.N, 1))], axis=1)
+        cols = [np.tile(b2, (self.N, 1)), self.task.features(self.P), np.ones((self.N, 1))]
+        if self.dist_input:  # each particle plays the part of the true state
+            cols.append(self._distance(self.P)[:, None])
+        obs = np.concatenate(cols, axis=1)
         with torch.no_grad():
             d = self.policy.get_distribution(torch.as_tensor(obs, dtype=torch.float32)).distribution
             p_send = torch.special.ndtr(d.mean[:, -1] / d.stddev[:, -1]).numpy()
